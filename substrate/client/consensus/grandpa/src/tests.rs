@@ -1853,7 +1853,7 @@ async fn grandpa_voting_and_babe_reorg_race_condition() {
 
 	let hashof8_a = client.expect_block_hash_from_id(&BlockId::Number(8)).unwrap();
 
-	// Finalize the 7th block.
+	// finalize the 7th block
 	peer.client().finalize_block(hashes[6], None, false).unwrap();
 
 	assert_eq!(
@@ -1861,6 +1861,7 @@ async fn grandpa_voting_and_babe_reorg_race_condition() {
 		hashes[6],
 	);
 
+	// simulate completed grandpa round
 	env.completed(
 		1,
 		finality_grandpa::round::State {
@@ -1873,10 +1874,7 @@ async fn grandpa_voting_and_babe_reorg_race_condition() {
 		&finality_grandpa::HistoricalVotes::new()
 	).unwrap();
 
-	assert!(
-		env.select_chain.finality_target(hashof8_a, None).await.is_ok()
-	);
-
+	// check simulated last completed round
 	assert_eq!(
 		env
 			.voter_set_state
@@ -1892,7 +1890,12 @@ async fn grandpa_voting_and_babe_reorg_race_condition() {
 		}
 	);
 
-	// create a fork starting at block 8 that is 10 blocks long
+	// `hashof8_a` should be finalized next, verify that it's valid finality target
+	assert!(
+		env.select_chain.finality_target(hashof8_a, None).await.is_ok()
+	);
+
+	// simulate reorg on block 8 by creating a fork starting at block 8 that is 10 blocks long
 	let fork = peer.generate_blocks_at(
 		BlockId::Number(7),
 		10,
@@ -1907,6 +1910,24 @@ async fn grandpa_voting_and_babe_reorg_race_condition() {
 		ForkChoiceStrategy::LongestChain,
 	);
 
+	// verify that last completed round has `prevote_ghost` and `estimate` blocks related to `hashof8_a`
+	assert_eq!(
+		env
+			.voter_set_state
+			.read()
+			.last_completed_round()
+			.state
+		,
+		finality_grandpa::round::State {
+			prevote_ghost: Some((hashof8_a, 8)),
+			finalized: Some((hashes[6], 7)),
+			estimate: Some((hashof8_a, 8)),
+			completable: true
+		}
+	);
+
+	// `hashof8_a` should be finalized next based on last completed round data,
+	// but it's not an valid finality target
 	assert_matches!(
 		env.select_chain.finality_target(hashof8_a, None).await.unwrap_err(),
 		ConsensusError::ChainLookup(_)
