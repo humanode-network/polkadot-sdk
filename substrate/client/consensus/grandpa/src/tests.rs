@@ -1821,6 +1821,99 @@ async fn grandpa_environment_checks_if_best_block_is_descendent_of_finality_targ
 }
 
 #[tokio::test]
+async fn grandpa_voting_and_babe_reorg_race_condition() {
+	use finality_grandpa::voter::Environment;
+	use sp_consensus::SelectChain;
+
+	let peers = &[Ed25519Keyring::Alice];
+	let voters = make_ids(peers);
+
+	let mut net = GrandpaTestNet::new(TestApi::new(voters), 1, 0);
+	let peer = net.peer(0);
+	let network_service = peer.network_service().clone();
+	let sync_service = peer.sync_service().clone();
+	let notification_service =
+		peer.take_notification_service(&grandpa_protocol_name::NAME.into()).unwrap();
+	let link = peer.data.lock().take().unwrap();
+	let client = peer.client().as_client().clone();
+	let select_chain = sc_consensus::LongestChain::new(peer.client().as_backend());
+
+	// create a chain that is 10 blocks long
+	let hashes = peer.push_blocks(10, false);
+
+	let env = test_environment_with_select_chain(
+		&link,
+		None,
+		network_service.clone(),
+		sync_service,
+		notification_service,
+		select_chain.clone(),
+		VotingRulesBuilder::default().build(),
+	);
+
+	let hashof8_a = client.expect_block_hash_from_id(&BlockId::Number(8)).unwrap();
+
+	// Finalize the 7th block.
+	peer.client().finalize_block(hashes[6], None, false).unwrap();
+
+	assert_eq!(
+		peer.client().info().finalized_hash,
+		hashes[6],
+	);
+
+	env.completed(
+		1,
+		finality_grandpa::round::State {
+			prevote_ghost: Some((hashof8_a, 8)),
+			finalized: Some((hashes[6], 7)),
+			estimate: Some((hashof8_a, 8)),
+			completable: true
+		},
+		Default::default(),
+		&finality_grandpa::HistoricalVotes::new()
+	).unwrap();
+
+	assert!(
+		env.select_chain.finality_target(hashof8_a, None).await.is_ok()
+	);
+
+	assert_eq!(
+		env
+			.voter_set_state
+			.read()
+			.last_completed_round()
+			.state
+		,
+		finality_grandpa::round::State {
+			prevote_ghost: Some((hashof8_a, 8)),
+			finalized: Some((hashes[6], 7)),
+			estimate: Some((hashof8_a, 8)),
+			completable: true
+		}
+	);
+
+	// create a fork starting at block 8 that is 10 blocks long
+	let fork = peer.generate_blocks_at(
+		BlockId::Number(7),
+		10,
+		BlockOrigin::File,
+		|mut builder| {
+			builder.push_deposit_log_digest_item(DigestItem::Other(vec![1])).unwrap();
+			builder.build().unwrap().block
+		},
+		false,
+		false,
+		true,
+		ForkChoiceStrategy::LongestChain,
+	);
+
+	assert_matches!(
+		env.select_chain.finality_target(hashof8_a, None).await.unwrap_err(),
+		ConsensusError::ChainLookup(_)
+	);
+}
+
+#[tokio::test]
 async fn grandpa_environment_never_overwrites_round_voter_state() {
 	use finality_grandpa::voter::Environment;
 
