@@ -1910,6 +1910,9 @@ async fn grandpa_voting_and_babe_reorg_race_condition() {
 		ForkChoiceStrategy::LongestChain,
 	);
 
+	// check that new best chain is on longest chain
+	assert_eq!(env.select_chain.best_chain().await.unwrap().number, 17);
+
 	// verify that last completed round has `prevote_ghost` and `estimate` blocks related to `hashof8_a`
 	assert_eq!(
 		env
@@ -1932,6 +1935,12 @@ async fn grandpa_voting_and_babe_reorg_race_condition() {
 		env.select_chain.finality_target(hashof8_a, None).await.unwrap_err(),
 		ConsensusError::ChainLookup(_)
 	);
+
+	// simulate finalizion of the `hashof8_a` block
+	peer.client().finalize_block(hashof8_a, None, false).unwrap();
+
+	// check that best chain is reverted
+	assert_eq!(env.select_chain.best_chain().await.unwrap().number, 10);
 }
 
 #[tokio::test]
