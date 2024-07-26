@@ -1820,8 +1820,9 @@ async fn grandpa_environment_checks_if_best_block_is_descendent_of_finality_targ
 	);
 }
 
+// might happen in reorg case - <https://github.com/humanode-network/humanode/issues/1104>
 #[tokio::test]
-async fn grandpa_voting_and_babe_reorg_race_condition() {
+async fn selecting_block_outside_of_best_chain_works() {
 	use finality_grandpa::voter::Environment;
 	use sp_consensus::SelectChain;
 
@@ -1890,9 +1891,14 @@ async fn grandpa_voting_and_babe_reorg_race_condition() {
 		}
 	);
 
-	// `hashof8_a` should be finalized next, verify that it's valid finality target
-	assert!(
-		env.select_chain.finality_target(hashof8_a, None).await.is_ok()
+	// `hashof8_a` should be finalized next, `best_chain_containing` should return `hashof8_a`
+	assert_eq!(
+		env.best_chain_containing(hashof8_a)
+			.await
+			.unwrap()
+			.unwrap()
+			.0,
+		hashof8_a,
 	);
 
 	// simulate reorg on block 8 by creating a fork starting at block 8 that is 10 blocks long
@@ -1929,17 +1935,20 @@ async fn grandpa_voting_and_babe_reorg_race_condition() {
 		}
 	);
 
-	// `hashof8_a` should be finalized next based on last completed round data,
-	// but it's not an valid finality target
-	assert_matches!(
-		env.select_chain.finality_target(hashof8_a, None).await.unwrap_err(),
-		ConsensusError::ChainLookup(_)
+	// `hashof8_a` should be finalized next, `best_chain_containing` should still return `hashof8_a`
+	assert_eq!(
+		env.best_chain_containing(hashof8_a)
+			.await
+			.unwrap()
+			.unwrap()
+			.0,
+		hashof8_a,
 	);
 
 	// simulate finalizion of the `hashof8_a` block
 	peer.client().finalize_block(hashof8_a, None, false).unwrap();
 
-	// check that best chain is reverted
+	// check that best chain is reorged back
 	assert_eq!(env.select_chain.best_chain().await.unwrap().number, 10);
 }
 
